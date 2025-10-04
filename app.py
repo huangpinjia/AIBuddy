@@ -1,6 +1,7 @@
 import os
 import random
 import traceback
+import json
 from flask import Flask, request, jsonify, render_template
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -19,7 +20,11 @@ with open("prompt.txt", "r", encoding="utf-8") as f:
     SYSTEM_PROMPT = f.read().strip()
 
 # 初始化 Firebase
-cred = credentials.Certificate("firebase-key.json")  # 換成你的 service account key
+firebase_json = os.getenv("FIREBASE_SERVICE_ACCOUNT")
+if not firebase_json:
+    raise RuntimeError("缺少環境變數 FIREBASE_SERVICE_ACCOUNT")
+
+cred = credentials.Certificate(json.loads(firebase_json))
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
@@ -96,4 +101,6 @@ def init():
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
+
