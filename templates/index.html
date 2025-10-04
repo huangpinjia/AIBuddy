@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8" />
-  <title>AIBuddy</title>
+  <title>聊天機器人</title>
   <style>
     body {
       margin: 0;
@@ -213,9 +213,10 @@
       addMessage("user", msg);
       input.innerHTML = "";
 
-      // 加入載入中動畫
+      // 加入載入中動畫（左邊）
       const loadingId = addMessage("bot", "正在思考中");
-      const loadingBubble = document.getElementById(loadingId);
+      const loadingWrapper = document.getElementById(loadingId);
+      const loadingBubble = loadingWrapper.querySelector(".bubble");
       loadingBubble.classList.add("loading-dots");
 
       fetch("/chat", {
@@ -242,16 +243,17 @@
         });
     }
 
+    // 回傳 wrapper 的 ID（修正對齊問題）
     function addMessage(sender, text) {
       const box = document.getElementById("chatbox");
       const wrapper = document.createElement("div");
       wrapper.className = `message ${sender}`;
+      const id = "msg-" + Date.now();
+      wrapper.id = id;
 
       const bubble = document.createElement("div");
       bubble.className = "bubble";
       bubble.textContent = text;
-      const id = "msg-" + Date.now();
-      bubble.id = id;
 
       wrapper.appendChild(bubble);
       box.appendChild(wrapper);
