@@ -1,4 +1,7 @@
-flask
-openai
-python-dotenv
+Flask>=3.0
+flask-cors>=4.0
 firebase-admin>=6.0.0
+google-cloud-firestore>=2.16
+python-dotenv>=1.0.1
+openai>=1.37.0
+gunicorn>=21.0
