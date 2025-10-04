@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8" />
-  <title>聊天機器人</title>
+  <title>AIBuddy</title>
   <style>
     body {
       margin: 0;
@@ -156,6 +156,19 @@
       margin: 0 5px;
       cursor: pointer;
     }
+
+    /* 載入動畫 */
+    .loading-dots::after {
+      content: "";
+      animation: dots 1.2s steps(3, end) infinite;
+    }
+
+    @keyframes dots {
+      0%, 20% { content: ""; }
+      40% { content: "."; }
+      60% { content: ".."; }
+      80%, 100% { content: "..."; }
+    }
   </style>
 </head>
 <body>
@@ -200,13 +213,33 @@
       addMessage("user", msg);
       input.innerHTML = "";
 
+      // 加入載入中動畫
+      const loadingId = addMessage("bot", "正在思考中");
+      const loadingBubble = document.getElementById(loadingId);
+      loadingBubble.classList.add("loading-dots");
+
       fetch("/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_id: username, message: msg })
       })
-        .then(res => res.json())
-        .then(data => addMessage("bot", data.reply));
+        .then(async res => {
+          const data = await res.json();
+          loadingBubble.classList.remove("loading-dots");
+
+          if (!res.ok) {
+            loadingBubble.textContent = "⚠️ 系統錯誤：" + (data.error || "請稍後再試");
+          } else if (data.reply) {
+            loadingBubble.textContent = data.reply;
+          } else {
+            loadingBubble.textContent = "⚠️ 沒有回應內容。";
+          }
+        })
+        .catch(err => {
+          console.error("Chat error:", err);
+          loadingBubble.classList.remove("loading-dots");
+          loadingBubble.textContent = "❌ 網路或伺服器錯誤，請稍後重試。";
+        });
     }
 
     function addMessage(sender, text) {
@@ -217,10 +250,13 @@
       const bubble = document.createElement("div");
       bubble.className = "bubble";
       bubble.textContent = text;
+      const id = "msg-" + Date.now();
+      bubble.id = id;
 
       wrapper.appendChild(bubble);
       box.appendChild(wrapper);
       box.scrollTop = box.scrollHeight;
+      return id;
     }
 
     trigger.addEventListener("click", () => {
@@ -248,7 +284,7 @@
       inputBox.focus();
     }
 
-    // 🔹 一打開就呼叫 /init，顯示招呼語
+    // 一打開就呼叫 /init，顯示招呼語
     document.addEventListener("DOMContentLoaded", function() {
       fetch("/init")
         .then(res => res.json())
