@@ -1,105 +1,99 @@
+import os
+import random
+import traceback
 from flask import Flask, request, jsonify, render_template
 from dotenv import load_dotenv
-import os
-import requests
-import json
-import sqlite3
-from datetime import datetime
+from openai import OpenAI
+import firebase_admin
+from firebase_admin import credentials, firestore
 
-# 載入 .env
 load_dotenv()
-GPT_API_BASE = os.getenv("GPT_API_BASE")
-GPT_API_KEY = os.getenv("GPT_API_KEY")
 
-# Flask 初始化
-app = Flask(__name__, template_folder="templates")
+# 初始化 Flask & OpenAI
+app = Flask(__name__)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+MODEL_ID = os.getenv("FINE_TUNED_MODEL")  # 你的 fine-tuned 模型 ID
 
-# 每個使用者的記憶體聊天紀錄
-chat_history = {}
+# 讀取系統提示語
+with open("prompt.txt", "r", encoding="utf-8") as f:
+    SYSTEM_PROMPT = f.read().strip()
 
-# 載入 prompt
-base_dir = os.path.dirname(os.path.abspath(__file__))
-with open(os.path.join(base_dir, "prompt.txt"), "r", encoding="utf-8") as f:
-    base_prompt = f.read()
+# 初始化 Firebase
+cred = credentials.Certificate("firebase-key.json")  # 換成你的 service account key
+firebase_admin.initialize_app(cred)
+db = firestore.client()
 
-# 建立 SQLite 資料表（啟動時只跑一次）
-def init_db():
-    conn = sqlite3.connect("chat_history.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            role TEXT,
-            content TEXT,
-            timestamp TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+MAX_HISTORY = 10  # 只保留最近 10 筆
 
-# 儲存對話紀錄到 SQLite
-def save_chat_to_db(user_id, role, content):
-    conn = sqlite3.connect("chat_history.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO messages (user_id, role, content, timestamp)
-        VALUES (?, ?, ?, ?)
-    """, (user_id, role, content, datetime.now().isoformat()))
-    conn.commit()
-    conn.close()
-
-# 呼叫 GPT API
-def ask_gpt_proxy(messages):
-    headers = {
-        "Content-Type": "application/json",
-    }
-    if GPT_API_KEY:
-        headers["Authorization"] = f"Bearer {GPT_API_KEY}"
-
-    data = {
-        "model": "gpt-3.5-turbo",
-        "messages": messages,
-        "temperature": 0.7,
-        "max_tokens": 512
-    }
-
-    try:
-        response = requests.post(GPT_API_BASE, headers=headers, json=data)
-        response.raise_for_status()
-        result = response.json()
-        return result["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        return f"⚠️ GPT 回應錯誤：{e}"
-
-# 首頁：顯示聊天網頁
 @app.route("/")
 def index():
     return render_template("index.html")
 
-# 聊天 API 路由
 @app.route("/chat", methods=["POST"])
 def chat():
-    data = request.get_json()
-    user_id = data.get("user_id", "web_user")
-    user_msg = data.get("message", "")
+    data = request.get_json(force=True)
+    user_id = data.get("user_id", "default")
+    user_input = data.get("message", "").strip()
+    if not user_input:
+        return jsonify({"error": "message is required"}), 400
 
-    if user_id not in chat_history:
-        chat_history[user_id] = [{"role": "system", "content": base_prompt}]
+    try:
+        # 1. 從 Firestore 抓最近 10 筆
+        messages_ref = db.collection("conversations").document(user_id).collection("messages")
+        docs = messages_ref.order_by("timestamp", direction=firestore.Query.DESCENDING).limit(MAX_HISTORY).stream()
 
-    chat_history[user_id].append({"role": "user", "content": user_msg})
-    save_chat_to_db(user_id, "user", user_msg)
+        # 2. 只取 role + content，去掉 timestamp
+        history = [
+            {"role": d["role"], "content": d["content"]}
+            for d in (doc.to_dict() for doc in docs)
+            if "role" in d and "content" in d
+        ]
+        history.reverse()  # DESCENDING → 要反轉成時間順序
 
-    ai_reply = ask_gpt_proxy(chat_history[user_id])
+        # 3. 加上這次的使用者訊息
+        history.append({"role": "user", "content": user_input})
 
-    chat_history[user_id].append({"role": "assistant", "content": ai_reply})
-    save_chat_to_db(user_id, "assistant", ai_reply)
+        # 4. 準備要送進模型的 messages
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
 
-    return jsonify({"reply": ai_reply})
+        # 5. 呼叫 fine-tuned 模型
+        resp = client.chat.completions.create(
+            model=MODEL_ID,
+            messages=messages,
+            temperature=0.5,
+            max_tokens=500
+        )
 
-# 啟動伺服器
+        assistant_reply = resp.choices[0].message.content
+
+        # 6. 把這次對話存回 Firestore
+        messages_ref.add({"role": "user", "content": user_input, "timestamp": firestore.SERVER_TIMESTAMP})
+        messages_ref.add({"role": "assistant", "content": assistant_reply, "timestamp": firestore.SERVER_TIMESTAMP})
+
+        return jsonify({"reply": assistant_reply})
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/init", methods=["GET"])
+def init():
+    try:
+        greetings = [
+            "你好呀！今天想和我聊點什麼呢？😊",
+            "嗨嗨～ 有甚麼想跟我討論的嗎？",
+            "啊囉哈！🌟 最近在學什麼呢？我們一起討論啊~ ",
+            "嘿～👋 今天我們要一起討論什麼？是感知器、決策樹，還是線性迴歸之類的呢？",
+            "嗨～很高興見到你！😄 你想從哪個主題開始聊聊呢？",
+            "Hey Yo！🎉 今天要聊點什麼？ 你的夥伴已上線～"
+        ]
+
+        greeting = random.choice(greetings)
+        return jsonify({"reply": greeting})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
-    init_db()
-    port = int(os.environ.get("PORT", 5000))  # Render 會提供 PORT 環境變數
-    app.run(host="0.0.0.0", port=port)
-
+    app.run(host="127.0.0.1", port=5000, debug=True)
